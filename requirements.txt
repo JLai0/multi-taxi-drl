@@ -1,0 +1,8 @@
+gymnasium
+numpy
+tensorboard
+tianshou
+torch
+torchaudio
+torchvision
+tqdm
