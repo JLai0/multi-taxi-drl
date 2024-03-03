@@ -30,7 +30,6 @@ class Taxi:
     loc: Location
     pass_idx: int = -1  # -1 refers to no passenger on board, rxefers to index in passenger list
 
-
 @dataclass
 class Passenger:
     loc: Location  # At beginning this is the start location of a passenger and later his/her current location
@@ -39,6 +38,18 @@ class Passenger:
 
     def loc_equals_dest(self):
         return self.loc == self.dest
+
+@dataclass
+class VerticalObstacle:
+    loc: Location
+    move_prob: float = 0.5
+    direction: int = 0 # 0 = Down, 1 = Up
+
+@dataclass
+class HorizontalObstacle:
+    loc: Location
+    move_prob: float = 0.5
+    direction: int = 0 # 0 = Left, 1 = Right
 
 
 @dataclass
@@ -71,6 +82,9 @@ class MultiTaxiEnv(gym.Env):
         self.env_map = np.asarray(env_map, dtype="c")
         self.s = State()
         self.s.taxis = [Taxi(Location()) for i in range(args.number_of_taxis)]
+        # self.number_of_obstacles = args.number_of_obstacles  # Add this argument to your argparse
+        self.vobstacles = [VerticalObstacle(Location(*get_random_location(self.number_of_columns, self.number_of_rows))) for _ in range(args.number_of_vobstacles)]
+        self.hobstacles = [HorizontalObstacle(Location(*get_random_location(self.number_of_columns, self.number_of_rows))) for _ in range(args.number_of_hobstacles)]
         self.s.passengers = [Passenger(Location(), Location()) for i in range(args.number_of_passengers)]
 
         self.action_space = gym.spaces.Discrete(len(written_actions) * args.number_of_taxis)
@@ -92,6 +106,24 @@ class MultiTaxiEnv(gym.Env):
         else:
             print("error: no more than 5 taxis allowed")
 
+    def is_cell_occupied(self, y, x):
+        # Check if the location is occupied by a taxi
+        for taxi in self.s.taxis:  # Assuming self.taxis is a list of taxis in the environment
+            if taxi.loc.y == y and taxi.loc.x == x:
+                return True
+        # Extend this logic to include other entities, such as obstacles
+        for obstacle in self.vobstacles:  # Assuming self.vobstacles tracks obstacles
+            if obstacle.loc.y == y and obstacle.loc.x == x:
+                return True # Assuming self.vobstacles tracks obstacles
+        for obstacle in self.hobstacles:  # Assuming self.vobstacles tracks obstacles
+            if obstacle.loc.y == y and obstacle.loc.x == x:
+                return True # Assuming self.vobstacles tracks obstacles
+        for passenger in self.s.passengers:
+            if passenger.loc.y == y and passenger.loc.x == x:
+                return True
+        # Add similar checks for any other types of entities you have
+        return False
+
     def step(self, actions: list[int]):
         terminated, truncated = self._all_passengers_served(), False
 
@@ -110,6 +142,38 @@ class MultiTaxiEnv(gym.Env):
         if not isinstance(actions, list):
             actions = [actions]
             # TODO: actions = [actions % 7, actions // 7]  # TODO: Works only for two agents
+
+        for obstacle in self.vobstacles:
+                next_y = obstacle.loc.y - 1 if obstacle.direction == 1 else obstacle.loc.y + 1
+                
+                # Check for boundary collisions
+                if next_y < 0 or next_y >= self.number_of_rows:
+                    obstacle.direction = 0 if obstacle.direction == 1 else 1
+                    continue  # Skip the rest of the loop and don't move this obstacle this turn
+                
+                # Check for collisions with other entities
+                if self.is_cell_occupied(next_y, obstacle.loc.x):
+                    obstacle.direction = 0 if obstacle.direction == 1 else 1
+                    continue  # Skip moving this obstacle due to collision
+                
+                # If no collision, update position
+                obstacle.loc.y = next_y
+        
+        for obstacle in self.hobstacles:
+                next_x = obstacle.loc.x - 1 if obstacle.direction == 0 else obstacle.loc.x + 1
+                
+                # Check for boundary collisions
+                if next_x < 0 or next_x >= self.number_of_columns:
+                    obstacle.direction = 1 if obstacle.direction == 0 else 0
+                    continue  # Skip the rest of the loop and don't move this obstacle this turn
+                
+                # Check for collisions with other entities
+                if self.is_cell_occupied(obstacle.loc.y, next_x):
+                    obstacle.direction = 1 if obstacle.direction == 0 else 0
+                    continue  # Skip moving this obstacle due to collision
+                
+                # If no collision, update position
+                obstacle.loc.x = next_x
 
         rewards = [-1]*len(self.s.taxis)  # default reward when there is no pickup/dropoff but a movement
         taxis_and_id_in_random_order = random.sample(list(zip(list(range(len(self.s.taxis))), self.s.taxis)), len(self.s.taxis))
@@ -152,6 +216,7 @@ class MultiTaxiEnv(gym.Env):
         env_logger.info(f'{id(self)} Step to: {self.s}')
         # return (self.s, np.asarray(rewards).sum(), terminated, truncated, {"action_mask": self._get_action_mask()})  # TODO: Why doesn't it work with tianshou?
         return (self.s, np.asarray(rewards).sum(), terminated, truncated, {})
+    
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)  # Needed to seed self.np_random
@@ -213,6 +278,10 @@ class MultiTaxiEnv(gym.Env):
             else:  # passenger in taxi
                 out[1 + taxi.loc.y][2 * taxi.loc.x + 1] = self._colorize(str(taxi_idx), self.passenger_colors[
                     taxi.pass_idx])  # pass color + taxi idx
+        for obstacle in self.vobstacles:
+            out[obstacle.loc.y + 1][obstacle.loc.x * 2 + 1] = 'Y'
+        for obstacle in self.hobstacles:
+            out[obstacle.loc.y + 1][obstacle.loc.x * 2 + 1] = 'X'
 
         outfile.write("\n".join(["".join(row) for row in out]) + "\n")
         # TODO: Clarify rendering
@@ -361,11 +430,13 @@ def main():
     random.seed(random_seed), np.random.seed(random_seed)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--number_of_rows', help='Number of rows.', type=int, default=3)
-    parser.add_argument('--number_of_columns', help='Number of columns.', type=int, default=3)
+    parser.add_argument('--number_of_rows', help='Number of rows.', type=int, default=5)
+    parser.add_argument('--number_of_columns', help='Number of columns.', type=int, default=5)
     parser.add_argument('-ab', '--amount_of_borders', type=float, help='The amount of borders in the environment.', default=0.0)
     parser.add_argument('--number_of_taxis', help='Number of taxis.', type=int, default=1)
     parser.add_argument('--number_of_passengers', help='Number of passengers.', type=int, default=1)
+    parser.add_argument('--number_of_vobstacles', help='Number of vertical obstacles.', type=int, default=1)
+    parser.add_argument('--number_of_hobstacles', help='Number of horizontal obstacles.', type=int, default=1)
     args = parser.parse_args()
 
     env_map = create_env_map(args.number_of_columns, args.number_of_rows, args.amount_of_borders)
@@ -379,7 +450,9 @@ def main():
         while (not terminated) and (not truncated) and (counter < max_nof_steps):
             counter += 1
             actions = [random.randint(0, 6) for i in range(args.number_of_taxis)]
+            print(actions)
             obs, reward, terminated, truncated, info = env.step(actions)
+            
             print(
                 f"[{counter}:{max_nof_steps}] reward: {reward}; actions: {[written_actions[a] for a in actions]}; terminated: {terminated}; truncated: {truncated}")
             print(env.render())
